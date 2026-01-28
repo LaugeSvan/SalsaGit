@@ -4,19 +4,18 @@ const { Client, GatewayIntentBits, ChannelType, Events } = require('discord.js')
 const { Octokit } = require("@octokit/rest");
 const { createAppAuth } = require("@octokit/auth-app");
 const express = require('express');
-const SmeeClient = require('smee-client');
 
-// --- KONFIGURATION ---
+// --- CONFIGURATION ---
 const { 
-    DISCORD_TOKEN, GUILD_ID, CATEGORY_ID, SMEE_URL,
+    DISCORD_TOKEN, GUILD_ID, CATEGORY_ID,
     GITHUB_APP_ID, GITHUB_INSTALLATION_ID,
-    PORT = 3000 
+    PORT = 8080 // Default to 8080 or whatever custom port you set in .env
 } = process.env;
 
-// Indlæs den private nøgle fra filen
+// Load the private key from the .pem file
 const privateKey = fs.readFileSync('./private-key.pem', 'utf8');
 
-// Initialiser Octokit (GitHub App)
+// Initialize Octokit (GitHub App)
 const octokit = new Octokit({
     authStrategy: createAppAuth,
     auth: {
@@ -26,19 +25,19 @@ const octokit = new Octokit({
     },
 });
 
-// Initialiser Discord Client
+// Initialize Discord Client
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 const app = express();
 app.use(express.json());
 
-// --- KERNEFUNKTION: Tjek repo og opret setup ---
+// --- CORE LOGIC: Check repo and create setup ---
 async function processRepo(owner, repoName) {
-    console.log(`🔎 Tjekker repo: ${repoName}...`);
+    console.log(`🔎 Checking repo: ${repoName}...`);
     try {
         const response = await octokit.repos.getContent({
             owner,
             repo: repoName,
-            path: '.discord_bot' // Navnet vi endte på
+            path: '.discord_bot'
         });
 
         const content = Buffer.from(response.data.content, 'base64').toString();
@@ -47,25 +46,21 @@ async function processRepo(owner, repoName) {
             const guild = await client.guilds.fetch(GUILD_ID);
             const channelName = repoName.toLowerCase().replace(/[^a-z0-9-_]/g, '-');
 
-            // Find eksisterende kanal
             let channel = guild.channels.cache.find(c => c.name === channelName);
             
             if (!channel) {
-                console.log(`🚀 Betingelse opfyldt! Opretter kanal: #${channelName}`);
+                console.log(`🚀 Creating channel: #${channelName}`);
                 
-                // 1. Opret kanal
                 channel = await guild.channels.create({
                     name: channelName,
                     type: ChannelType.GuildText,
                     parent: CATEGORY_ID
                 });
 
-                // 2. Opret Discord Webhook
                 const discordWebhook = await channel.createWebhook({
                     name: 'GitHub App Notifier'
                 });
 
-                // 3. Opret GitHub Webhook (forbinder repo til den nye kanal)
                 await octokit.repos.createWebhook({
                     owner,
                     repo: repoName,
@@ -76,38 +71,36 @@ async function processRepo(owner, repoName) {
                     },
                     events: ['push', 'pull_request', 'issues']
                 });
-                console.log(`✅ Succes! Setup færdigt for ${repoName}`);
+                console.log(`✅ Success! Setup complete for ${repoName}`);
             } else {
-                console.log(`ℹ️ Kanal #${channelName} findes allerede. Springer over.`);
+                console.log(`ℹ️ Channel #${channelName} already exists.`);
             }
         }
     } catch (error) {
         if (error.status === 404) {
-            console.log(`❌ Ingen '.discord_bot' fundet i ${repoName}`);
+            console.log(`❌ No '.discord_bot' found in ${repoName}`);
         } else {
-            console.error(`❌ Fejl i ${repoName}:`, error.message);
+            console.error(`❌ Error in ${repoName}:`, error.message);
         }
     }
 }
 
-// --- SCANNER: Tjekker alle tilgængelige projekter ---
+// --- SCANNER: Checks all accessible projects ---
 async function scanExistingRepos() {
-    console.log("🕵️ Begynder scanning af repositories...");
+    console.log("🕵️ Beginning repository scan...");
     try {
         const { data } = await octokit.apps.listReposAccessibleToInstallation();
-        const repositories = data.repositories;
-        
-        for (const repo of repositories) {
+        for (const repo of data.repositories) {
             await processRepo(repo.owner.login, repo.name);
         }
-        console.log("✨ Scanning fuldført!");
+        console.log("✨ Scan complete!");
     } catch (error) {
-        console.error("❌ Kunne ikke scanne repos:", error.message);
+        console.error("❌ Could not scan repos:", error.message);
     }
 }
 
-// --- WEBHOOK MODTAGER (Til push/oprettelse i realtid) ---
-app.post('/webhook', async (req, res) => {
+// --- WEBHOOK RECEIVER (Real-time) ---
+app.post('/salsagitwebhook', async (req, res) => {
     const event = req.headers['x-github-event'];
     const payload = req.body;
 
@@ -119,20 +112,15 @@ app.post('/webhook', async (req, res) => {
     res.status(200).send('OK');
 });
 
-// --- SMEE TUNNEL ---
-const smee = new SmeeClient({
-    source: SMEE_URL,
-    target: `http://localhost:${PORT}/webhook`,
-    logger: console
-});
-smee.start();
-
 // --- START BOT ---
 client.once(Events.ClientReady, async (c) => {
-    console.log(`🤖 Bot er online! Logget ind som: ${c.user.tag}`);
-    // Kør scanneren ved opstart
+    console.log(`🤖 Bot is online! Logged in as: ${c.user.tag}`);
     await scanExistingRepos();
 });
 
 client.login(DISCORD_TOKEN);
-app.listen(PORT, () => console.log(`🌐 Webhook server kører på port ${PORT}`));
+
+// Listen on '0.0.0.0' to allow external connections to your server
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`🌐 SalsaGit Server listening on port ${PORT}`);
+});
