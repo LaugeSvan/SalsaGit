@@ -48,18 +48,34 @@ async function processRepo(owner, repoName) {
 
             let channel = guild.channels.cache.find(c => c.name === channelName);
             
+            // 1. Ensure Discord Channel exists
             if (!channel) {
                 console.log(`🚀 Creating channel: #${channelName}`);
-                
                 channel = await guild.channels.create({
                     name: channelName,
                     type: ChannelType.GuildText,
                     parent: CATEGORY_ID
                 });
+            } else {
+                console.log(`ℹ️ Channel #${channelName} exists. Checking webhook...`);
+            }
 
-                const discordWebhook = await channel.createWebhook({
-                    name: 'GitHub App Notifier'
-                });
+            // 2. Check if GitHub Webhook already exists to avoid duplicates
+            const { data: hooks } = await octokit.repos.listWebhooks({ owner, repo: repoName });
+            const webhookExists = hooks.some(h => h.config.url.includes('discord.com/api/webhooks'));
+
+            if (!webhookExists) {
+                console.log(`🔗 Creating missing GitHub Webhook for ${repoName}...`);
+                
+                // We need a Discord Webhook URL. If the channel was just created, we make one.
+                // If it already existed, we try to find an existing one or make a new one.
+                let discordWebhook;
+                const existingWebhooks = await channel.fetchWebhooks();
+                discordWebhook = existingWebhooks.find(w => w.name === 'GitHub App Notifier');
+
+                if (!discordWebhook) {
+                    discordWebhook = await channel.createWebhook({ name: 'GitHub App Notifier' });
+                }
 
                 await octokit.repos.createWebhook({
                     owner,
@@ -71,10 +87,12 @@ async function processRepo(owner, repoName) {
                     },
                     events: ['push', 'pull_request', 'issues']
                 });
-                console.log(`✅ Success! Setup complete for ${repoName}`);
+                console.log(`✅ GitHub Webhook linked to #${channelName}`);
             } else {
-                console.log(`ℹ️ Channel #${channelName} already exists.`);
+                console.log(`✅ Webhook already configured for ${repoName}`);
             }
+            
+            console.log(`✅ Success! Setup verified for ${repoName}`);
         }
     } catch (error) {
         if (error.status === 404) {
